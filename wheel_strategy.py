@@ -118,8 +118,13 @@ class WheelStrategy:
                 print("Please enter a valid number.")
 
         # Calculate target shares (aim for ~50% initial equity allocation)
-        target_shares = int((funding_amount * 0.5) / current_price)
-        target_shares = (target_shares // 100) * 100  # Round to nearest 100 shares
+        import math
+        if math.isnan(current_price):
+            print(f"⚠️  Warning: Invalid stock price, using default target of 100 shares")
+            target_shares = 100
+        else:
+            target_shares = int((funding_amount * 0.5) / current_price)
+            target_shares = max(100, (target_shares // 100) * 100)  # Round to nearest 100 shares, minimum 100
 
         # Show current account balance
         account_summary = await self.ib.accountSummaryAsync()
@@ -175,7 +180,24 @@ class WheelStrategy:
         self.ib.reqMktData(self.stock_contract, '', False, False)
         await asyncio.sleep(1)
         ticker = self.ib.ticker(self.stock_contract)
-        return ticker.last if ticker.last else ticker.close
+
+        import math
+
+        # Try last price first
+        if ticker.last and not math.isnan(ticker.last) and ticker.last > 0:
+            return ticker.last
+        # Try close price if last not available
+        elif ticker.close and not math.isnan(ticker.close) and ticker.close > 0:
+            return ticker.close
+        # Try bid/ask midpoint
+        elif (ticker.bid and ticker.ask and
+              not math.isnan(ticker.bid) and not math.isnan(ticker.ask) and
+              ticker.bid > 0 and ticker.ask > 0):
+            return (ticker.bid + ticker.ask) / 2
+        else:
+            # Fallback - this shouldn't happen but prevents crashes
+            print(f"⚠️  Warning: Could not get valid price for {self.config.symbol}, using $10.00 as fallback")
+            return 10.0
 
     async def assess_portfolio_balance(self) -> PortfolioBalance:
         """Assess current portfolio balance between cash and equity."""
