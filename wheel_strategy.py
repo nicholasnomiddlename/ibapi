@@ -196,7 +196,8 @@ class WheelStrategy:
             return (ticker.bid + ticker.ask) / 2
         else:
             # Fallback - this shouldn't happen but prevents crashes
-            print(f"⚠️  Warning: Could not get valid price for {self.config.symbol}, using $10.00 as fallback")
+            symbol = self.stock_contract.symbol if self.stock_contract else 'UNKNOWN'
+            print(f"⚠️  Warning: Could not get valid price for {symbol}, using $10.00 as fallback")
             return 10.0
 
     async def assess_portfolio_balance(self) -> PortfolioBalance:
