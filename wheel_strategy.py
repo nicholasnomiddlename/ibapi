@@ -322,12 +322,18 @@ class WheelStrategy:
 
         # Get strikes below current price (for puts)
         strikes = sorted([float(s) for s in chain.strikes])
-        put_strikes = [s for s in strikes if s < current_price * 0.95]  # At least 5% below current
+        put_strikes = [s for s in strikes if s < current_price and s >= current_price * 0.8]  # 20% below to current price
+
+        print(f"Current price: ${current_price:.2f}")
+        print(f"Available put strikes: {put_strikes[-10:] if len(put_strikes) > 10 else put_strikes}")  # Show last 10
+        print(f"Next 5 week expirations: {next_5_weeks}")
 
         recommendations = []
 
         for exp in next_5_weeks[:3]:  # Test first 3 expirations
-            for strike in put_strikes[-10:]:  # Test last 10 strikes (closest to current price)
+            for strike in put_strikes[-5:]:  # Test last 5 strikes (closest to current price)
+
+                print(f"  Trying {self.config.symbol} {exp} ${strike}P...")
 
                 # Create put contract
                 put_contract = Option(self.config.symbol, exp, strike, 'P', 'SMART')
@@ -336,23 +342,28 @@ class WheelStrategy:
                     # Qualify the contract
                     qualified = await self.ib.qualifyContractsAsync(put_contract)
                     if not qualified:
+                        print(f"    ❌ Could not qualify contract")
                         continue
 
                     put_contract = qualified[0]
 
                     # Get market data
                     self.ib.reqMktData(put_contract, '', False, False)
-                    await asyncio.sleep(0.5)  # Brief pause for data
+                    await asyncio.sleep(1)  # Longer pause for data
 
                     ticker = self.ib.ticker(put_contract)
 
                     if not ticker.bid or not ticker.ask:
+                        print(f"    ❌ No bid/ask data")
                         continue
 
                     # Check if we have Greeks
                     delta = None
                     if hasattr(ticker, 'modelGreeks') and ticker.modelGreeks:
                         delta = abs(ticker.modelGreeks.delta)  # Make positive for puts
+                        print(f"    ✓ Delta: {delta:.3f} (target: {targets.put_delta_min:.2f}-{targets.put_delta_max:.2f})")
+                    else:
+                        print(f"    ❌ No Greeks available")
 
                     # Check if delta is in our target range
                     if delta and targets.put_delta_min <= delta <= targets.put_delta_max:
