@@ -24,6 +24,16 @@ async def test_options_chain():
         # Create GLD stock contract
         gld_stock = Stock('GLD', 'ARCA', 'USD')
 
+        # Qualify the contract to get the contract ID
+        print("\nQualifying GLD contract...")
+        qualified_contracts = await ib.qualifyContractsAsync(gld_stock)
+        if not qualified_contracts:
+            print("✗ Could not qualify GLD contract")
+            return
+
+        gld_stock = qualified_contracts[0]
+        print(f"✓ Qualified contract ID: {gld_stock.conId}")
+
         # Get current stock price first
         print("\nGetting GLD stock price...")
         ib.reqMktData(gld_stock, '', False, False)
