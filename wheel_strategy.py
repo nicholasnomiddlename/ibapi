@@ -302,6 +302,7 @@ class WheelStrategy:
         market_hours = time(9, 30) <= now.time() <= time(16, 0) and now.weekday() < 5
         if not market_hours:
             print("⚠️  Warning: Market appears to be closed. Greeks may not be available.")
+            print("   For live bid/ask data and Greeks, run during market hours (9:30 AM - 4:00 PM ET).")
 
         # Get options chain
         chains = await self.ib.reqSecDefOptParamsAsync(
@@ -371,9 +372,27 @@ class WheelStrategy:
 
                     print(f"    📊 Bid: {ticker.bid}, Ask: {ticker.ask}, Last: {ticker.last}")
 
-                    if not ticker.bid or not ticker.ask or ticker.bid <= 0 or ticker.ask <= 0:
-                        print(f"    ❌ Invalid bid/ask data")
-                        continue
+                    # Handle NaN values (market closed)
+                    import math
+                    bid_valid = ticker.bid and not math.isnan(ticker.bid) and ticker.bid > 0
+                    ask_valid = ticker.ask and not math.isnan(ticker.ask) and ticker.ask > 0
+                    last_valid = ticker.last and not math.isnan(ticker.last) and ticker.last > 0
+
+                    # Use last price if bid/ask not available (market closed)
+                    if not bid_valid or not ask_valid:
+                        if last_valid:
+                            print(f"    📊 Using last price ${ticker.last:.3f} (market closed)")
+                            # Estimate bid/ask from last price (typical spread ~$0.01 for cheap options)
+                            estimated_mid = ticker.last
+                            estimated_spread = max(0.01, estimated_mid * 0.1)  # 10% spread minimum $0.01
+                            estimated_bid = estimated_mid - estimated_spread/2
+                            estimated_ask = estimated_mid + estimated_spread/2
+                            print(f"    📊 Estimated Bid: ${estimated_bid:.3f}, Ask: ${estimated_ask:.3f}")
+                            ticker.bid = estimated_bid
+                            ticker.ask = estimated_ask
+                        else:
+                            print(f"    ❌ No valid price data available")
+                            continue
 
                     if ticker.ask < ticker.bid:
                         print(f"    ❌ Invalid spread (ask < bid)")
@@ -407,6 +426,12 @@ class WheelStrategy:
                         mid_price = (ticker.bid + ticker.ask) / 2
                         cash_required = strike * 100  # Cash secured put requirement
                         premium_income = mid_price * 100
+
+                        # Validate calculated values
+                        import math
+                        if math.isnan(mid_price) or math.isnan(premium_income):
+                            print(f"    ❌ Invalid pricing calculation")
+                            continue
 
                         recommendations.append({
                             'contract': put_contract,
