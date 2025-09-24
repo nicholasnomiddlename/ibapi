@@ -296,6 +296,13 @@ class WheelStrategy:
 
         print(f"\n🔍 Searching for cash-secured puts for {self.config.symbol}...")
 
+        # Check if we're during market hours (rough check)
+        from datetime import datetime, time
+        now = datetime.now()
+        market_hours = time(9, 30) <= now.time() <= time(16, 0) and now.weekday() < 5
+        if not market_hours:
+            print("⚠️  Warning: Market appears to be closed. Greeks may not be available.")
+
         # Get options chain
         chains = await self.ib.reqSecDefOptParamsAsync(
             self.stock_contract.symbol, '', self.stock_contract.secType, self.stock_contract.conId
@@ -339,15 +346,20 @@ class WheelStrategy:
 
                 print(f"  Trying {self.config.symbol} {exp} ${strike}P...")
 
-                # Create put contract
-                put_contract = Option(self.config.symbol, exp, strike, 'P', 'SMART')
+                # Create put contract - try CBOE first for better options data
+                put_contract = Option(self.config.symbol, exp, strike, 'P', 'CBOE')
 
                 try:
                     # Qualify the contract
                     qualified = await self.ib.qualifyContractsAsync(put_contract)
                     if not qualified:
-                        print(f"    ❌ Could not qualify contract")
-                        continue
+                        # Try SMART exchange as fallback
+                        print(f"    🔄 CBOE failed, trying SMART...")
+                        put_contract = Option(self.config.symbol, exp, strike, 'P', 'SMART')
+                        qualified = await self.ib.qualifyContractsAsync(put_contract)
+                        if not qualified:
+                            print(f"    ❌ Could not qualify contract on any exchange")
+                            continue
 
                     put_contract = qualified[0]
 
@@ -357,8 +369,14 @@ class WheelStrategy:
 
                     ticker = self.ib.ticker(put_contract)
 
-                    if not ticker.bid or not ticker.ask:
-                        print(f"    ❌ No bid/ask data")
+                    print(f"    📊 Bid: {ticker.bid}, Ask: {ticker.ask}, Last: {ticker.last}")
+
+                    if not ticker.bid or not ticker.ask or ticker.bid <= 0 or ticker.ask <= 0:
+                        print(f"    ❌ Invalid bid/ask data")
+                        continue
+
+                    if ticker.ask < ticker.bid:
+                        print(f"    ❌ Invalid spread (ask < bid)")
                         continue
 
                     # Check if we have Greeks
