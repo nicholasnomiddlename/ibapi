@@ -41,7 +41,7 @@ async def test_connection():
 
         # Get account summary
         print("\nAccount information:")
-        account_summary = ib.accountSummary()
+        account_summary = await ib.accountSummaryAsync()
         for item in account_summary:
             if item.tag in ['TotalCashValue', 'NetLiquidation', 'BuyingPower']:
                 print(f"  {item.tag}: {item.value} {item.currency}")
