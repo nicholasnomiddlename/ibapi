@@ -197,7 +197,7 @@ class WheelStrategy:
 
         for pos in positions:
             if (hasattr(pos.contract, 'symbol') and
-                pos.contract.symbol == self.symbol and
+                pos.contract.symbol == self.config.symbol and
                 pos.contract.secType == 'STK'):
                 equity_shares = pos.position
                 break
@@ -288,6 +288,113 @@ class WheelStrategy:
 
         return balance, targets
 
+    async def get_put_recommendations(self, targets: DeltaTargets, max_contracts: int = 5) -> List[Dict]:
+        """Get specific cash-secured put recommendations."""
+
+        if not self.config:
+            return []
+
+        print(f"\n🔍 Searching for cash-secured puts for {self.config.symbol}...")
+
+        # Get options chain
+        chains = await self.ib.reqSecDefOptParamsAsync(
+            self.stock_contract.symbol, '', self.stock_contract.secType, self.stock_contract.conId
+        )
+
+        if not chains:
+            print("❌ No options chains found")
+            return []
+
+        chain = chains[0]
+        current_price = await self.get_current_stock_price()
+
+        # Get next 5 weeks of expirations
+        all_expirations = sorted(chain.expirations)
+        next_5_weeks = []
+
+        for exp_str in all_expirations:
+            exp_date = datetime.strptime(exp_str, '%Y%m%d')
+            days_out = (exp_date - datetime.now()).days
+            if 7 <= days_out <= 35:  # 1-5 weeks out
+                next_5_weeks.append(exp_str)
+            if len(next_5_weeks) >= 5:
+                break
+
+        # Get strikes below current price (for puts)
+        strikes = sorted([float(s) for s in chain.strikes])
+        put_strikes = [s for s in strikes if s < current_price * 0.95]  # At least 5% below current
+
+        recommendations = []
+
+        for exp in next_5_weeks[:3]:  # Test first 3 expirations
+            for strike in put_strikes[-10:]:  # Test last 10 strikes (closest to current price)
+
+                # Create put contract
+                put_contract = Option(self.config.symbol, exp, strike, 'P', 'SMART')
+
+                try:
+                    # Qualify the contract
+                    qualified = await self.ib.qualifyContractsAsync(put_contract)
+                    if not qualified:
+                        continue
+
+                    put_contract = qualified[0]
+
+                    # Get market data
+                    self.ib.reqMktData(put_contract, '', False, False)
+                    await asyncio.sleep(0.5)  # Brief pause for data
+
+                    ticker = self.ib.ticker(put_contract)
+
+                    if not ticker.bid or not ticker.ask:
+                        continue
+
+                    # Check if we have Greeks
+                    delta = None
+                    if hasattr(ticker, 'modelGreeks') and ticker.modelGreeks:
+                        delta = abs(ticker.modelGreeks.delta)  # Make positive for puts
+
+                    # Check if delta is in our target range
+                    if delta and targets.put_delta_min <= delta <= targets.put_delta_max:
+
+                        exp_date = datetime.strptime(exp, '%Y%m%d')
+                        days_to_exp = (exp_date - datetime.now()).days
+
+                        # Calculate premium and cash requirement
+                        mid_price = (ticker.bid + ticker.ask) / 2
+                        cash_required = strike * 100  # Cash secured put requirement
+                        premium_income = mid_price * 100
+
+                        recommendations.append({
+                            'contract': put_contract,
+                            'type': 'CASH_SECURED_PUT',
+                            'strike': strike,
+                            'expiration': exp,
+                            'days_to_exp': days_to_exp,
+                            'delta': delta,
+                            'bid': ticker.bid,
+                            'ask': ticker.ask,
+                            'mid_price': mid_price,
+                            'premium_income': premium_income,
+                            'cash_required': cash_required,
+                            'description': f"Sell {self.config.symbol} {exp_date.strftime('%m/%d')} ${strike}P"
+                        })
+
+                except Exception as e:
+                    continue  # Skip problematic contracts
+
+                if len(recommendations) >= max_contracts:
+                    break
+
+            if len(recommendations) >= max_contracts:
+                break
+
+        # Sort by delta (closest to target first)
+        target_delta = targets.get_put_target_delta()
+        recommendations.sort(key=lambda x: abs(x['delta'] - target_delta))
+
+        return recommendations[:max_contracts]
+
     def disconnect(self):
         """Disconnect from IB Gateway."""
         if self.ib.isConnected():
@@ -319,17 +426,43 @@ async def main():
             print("📈 CASH HEAVY: Focus on selling cash-secured puts to acquire equity")
             print(f"   Target put delta: ~{targets.get_put_target_delta():.2f}")
             print(f"   This will help move toward the 50/50 target allocation")
+
+            # Get specific put recommendations
+            put_recommendations = await strategy.get_put_recommendations(targets)
+
+            if put_recommendations:
+                print(f"\n💰 RECOMMENDED CASH-SECURED PUT TRADES:")
+                print(f"{'Trade':<25} {'Delta':<8} {'Premium':<10} {'Cash Req':<12} {'Days':<6}")
+                print("-" * 70)
+
+                for rec in put_recommendations:
+                    print(f"{rec['description']:<25} "
+                          f"{rec['delta']:.3f}    "
+                          f"${rec['premium_income']:>7.0f}   "
+                          f"${rec['cash_required']:>9.0f}   "
+                          f"{rec['days_to_exp']:>3}d")
+
+                total_premium = sum(r['premium_income'] for r in put_recommendations)
+                total_cash_req = sum(r['cash_required'] for r in put_recommendations)
+                print("-" * 70)
+                print(f"{'TOTALS:':<25} {'':>8} ${total_premium:>7.0f}   ${total_cash_req:>9.0f}")
+
+            else:
+                print("❌ No suitable put options found in target delta range")
+
         elif balance.is_equity_heavy:
             print("📉 EQUITY HEAVY: Focus on selling covered calls to reduce equity")
             print(f"   Target call delta: ~{targets.get_call_target_delta():.2f}")
             print(f"   This will help move toward the 50/50 target allocation")
+            print("   (Covered call selection not yet implemented)")
+
         else:
             print("⚖️  BALANCED: Maintain current allocation with both puts and calls")
             print(f"   Put delta: ~{targets.get_put_target_delta():.2f}")
             print(f"   Call delta: ~{targets.get_call_target_delta():.2f}")
+            print("   (Options selection for balanced portfolio not yet implemented)")
 
-        print(f"\nNext steps: Use these delta targets to select appropriate strikes")
-        print(f"in the next 5-week expiration window for {config.symbol}.")
+        print(f"\nNext step: Review the recommended trades above and place orders in TWS/IB Gateway.")
 
     except KeyboardInterrupt:
         print("\nSetup interrupted by user.")
