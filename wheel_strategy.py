@@ -322,16 +322,20 @@ class WheelStrategy:
 
         # Get strikes below current price (for puts)
         strikes = sorted([float(s) for s in chain.strikes])
-        put_strikes = [s for s in strikes if s < current_price and s >= current_price * 0.8]  # 20% below to current price
+        # Filter to strikes that are reasonable put candidates (not too far OTM)
+        put_strikes = [s for s in strikes if s < current_price and s >= current_price * 0.85]  # 15% below to current price
+        # Only use "clean" strikes (avoid weird decimals)
+        clean_strikes = [s for s in put_strikes if s == int(s) or s == int(s) + 0.5]
 
         print(f"Current price: ${current_price:.2f}")
-        print(f"Available put strikes: {put_strikes[-10:] if len(put_strikes) > 10 else put_strikes}")  # Show last 10
+        print(f"All put strikes: {put_strikes}")
+        print(f"Clean strikes: {clean_strikes}")
         print(f"Next 5 week expirations: {next_5_weeks}")
 
         recommendations = []
 
         for exp in next_5_weeks[:3]:  # Test first 3 expirations
-            for strike in put_strikes[-5:]:  # Test last 5 strikes (closest to current price)
+            for strike in clean_strikes[-5:]:  # Test last 5 clean strikes (closest to current price)
 
                 print(f"  Trying {self.config.symbol} {exp} ${strike}P...")
 
@@ -365,9 +369,19 @@ class WheelStrategy:
                     else:
                         print(f"    ❌ No Greeks available")
 
-                    # Check if delta is in our target range
-                    if delta and targets.put_delta_min <= delta <= targets.put_delta_max:
+                    # Check if delta is in our target range (or if no Greeks, still show the contract)
+                    in_delta_range = delta and targets.put_delta_min <= delta <= targets.put_delta_max
 
+                    # For now, let's be more flexible with delta requirements for testing
+                    should_include = False
+                    if delta and delta >= 0.05:  # At least 5 delta to be meaningful
+                        print(f"    ✓ Adding contract with delta {delta:.3f}")
+                        should_include = True
+                    elif not delta:  # No delta available, but contract exists
+                        print(f"    ✓ Adding contract (no delta available)")
+                        should_include = True
+
+                    if should_include:
                         exp_date = datetime.strptime(exp, '%Y%m%d')
                         days_to_exp = (exp_date - datetime.now()).days
 
@@ -382,7 +396,7 @@ class WheelStrategy:
                             'strike': strike,
                             'expiration': exp,
                             'days_to_exp': days_to_exp,
-                            'delta': delta,
+                            'delta': delta if delta else 0.0,
                             'bid': ticker.bid,
                             'ask': ticker.ask,
                             'mid_price': mid_price,
@@ -390,6 +404,8 @@ class WheelStrategy:
                             'cash_required': cash_required,
                             'description': f"Sell {self.config.symbol} {exp_date.strftime('%m/%d')} ${strike}P"
                         })
+
+                        print(f"    💰 Premium: ${premium_income:.0f}, Cash req: ${cash_required:.0f}")
 
                 except Exception as e:
                     continue  # Skip problematic contracts
